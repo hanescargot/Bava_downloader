@@ -28,7 +28,8 @@ jobs:
 
   build-macos:
     needs: validate-version
-    runs-on: macos-latest
+    # Build on Intel runner for broader compatibility (Intel Macs + Apple Silicon via Rosetta).
+    runs-on: macos-13
 
     steps:
       - name: Checkout
