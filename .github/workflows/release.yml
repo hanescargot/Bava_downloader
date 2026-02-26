@@ -66,7 +66,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-macos
-          files: |
+          path: |
             dist/BaVa Downloader-macos.zip
             dist/BaVa Downloader-macos.zip.sha256
 
@@ -111,7 +111,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-windows
-          files: |
+          path: |
             dist/BaVa Downloader-windows.zip
             dist/BaVa Downloader-windows.zip.sha256
 
