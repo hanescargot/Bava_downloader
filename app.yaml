@@ -1,0 +1,10 @@
+runtime: python39  # 파이썬 버전 선택 (3.7, 3.8, 3.9 등)
+entrypoint: gunicorn -b :$PORT main:app  # 애플리케이션 시작 명령어
+
+handlers:
+- url: /.*
+  script: auto
+
+env_variables:
+  FLASK_ENV: 'production'
+  GAE_USE_CLOUD_LOGGING: 'true'
