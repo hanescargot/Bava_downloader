@@ -152,11 +152,12 @@ def build_format_selector(format_code, quality, platform):
         height = requested_quality.replace('p', '')
         height_filter = f"[height<={height}]"
 
-    # Always prioritize muxed streams with audio to prevent silent video files.
+    # Always prioritize muxed A/V streams to prevent silent video outputs on macOS.
     return (
-        f"best{ext_filter}{height_filter}[acodec!=none]/"
-        f"best{ext_filter}[acodec!=none]/"
-        f"best{height_filter}[acodec!=none]/best"
+        f"best{ext_filter}{height_filter}[vcodec!=none][acodec!=none]/"
+        f"best{ext_filter}[vcodec!=none][acodec!=none]/"
+        f"best{height_filter}[vcodec!=none][acodec!=none]/"
+        f"best[vcodec!=none][acodec!=none]/best"
     )
 
 def load_settings():
