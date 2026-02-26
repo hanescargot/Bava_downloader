@@ -10,6 +10,7 @@ import json
 import sys
 import tempfile
 import subprocess
+import glob
 from urllib.parse import urlparse
 import logging
 import requests
@@ -378,6 +379,13 @@ def get_video_info():
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(video_url, download=False)
+            if not info:
+                return jsonify({'error': '동영상 정보를 가져올 수 없습니다. 비공개/제한 콘텐츠일 수 있습니다.'}), 400
+            if isinstance(info, dict) and info.get('entries'):
+                entries = [entry for entry in info.get('entries', []) if entry]
+                if not entries:
+                    return jsonify({'error': '동영상 정보를 가져올 수 없습니다. 비공개/제한 콘텐츠일 수 있습니다.'}), 400
+                info = entries[0]
             
             # 동영상 정보 추출
             video_data = {
@@ -469,20 +477,48 @@ def download_video():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             logger.info("YoutubeDL initialized")
             info = ydl.extract_info(video_url, download=True)
+            if not info:
+                return jsonify({'error': '다운로드 가능한 미디어를 찾지 못했습니다. 영상 권한 또는 포맷을 확인해주세요.'}), 400
+            if isinstance(info, dict) and info.get('entries'):
+                entries = [entry for entry in info.get('entries', []) if entry]
+                if not entries:
+                    return jsonify({'error': '다운로드 가능한 미디어를 찾지 못했습니다. 영상 권한 또는 포맷을 확인해주세요.'}), 400
+                info = entries[0]
+
             logger.info(f"Download completed, info: {info.get('title')}")
             
-            # 잠시 기다려 파일 시스템 동기화
-            time.sleep(1)
-            
-            # 다운로드 디렉토리 내용 확인
-            logger.info(f"Files in directory: {os.listdir(download_dir)}")
-            
-            # 다운로드된 파일명 찾기
+            # Windows 환경에서 yt-dlp 후처리(병합/이름변경)가 늦게 끝나는 경우가 있어 재시도한다.
             filename = None
-            for file in os.listdir(download_dir):
-                if file.startswith(file_id):
-                    filename = file
+            prepared_path = ydl.prepare_filename(info) if isinstance(info, dict) else None
+            for _ in range(20):
+                try:
+                    files_in_dir = os.listdir(download_dir)
+                except Exception:
+                    files_in_dir = []
+
+                if prepared_path:
+                    prepared_name = os.path.basename(prepared_path)
+                    if os.path.exists(prepared_path):
+                        filename = prepared_name
+                    else:
+                        prepared_no_ext, _ = os.path.splitext(prepared_name)
+                        if prepared_no_ext:
+                            matched = sorted(glob.glob(os.path.join(download_dir, f"{prepared_no_ext}.*")))
+                            matched = [m for m in matched if not m.endswith(('.part', '.tmp', '.ytdl'))]
+                            if matched:
+                                filename = os.path.basename(matched[0])
+
+                if not filename:
+                    for file in files_in_dir:
+                        if file.startswith(file_id) and not file.endswith(('.part', '.tmp', '.ytdl')):
+                            filename = file
+                            break
+
+                if filename:
                     break
+                time.sleep(0.5)
+
+            logger.info(f"Files in directory: {os.listdir(download_dir)}")
             
             if not filename:
                 return jsonify({'error': '파일 다운로드 후 찾을 수 없습니다'}), 500

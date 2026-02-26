@@ -711,6 +711,17 @@
           errorMessage.classList.remove("active");
         }
 
+        function mapDownloadErrorMessage(msg) {
+          const text = String(msg || "");
+          if (
+            text.includes("파일을 찾을 수 없습니다") ||
+            text.includes("파일 다운로드 후 찾을 수 없습니다")
+          ) {
+            return "다운로드 불가능한 영상 포맷입니다.";
+          }
+          return text || "다운로드 실패";
+        }
+
         function showLoader() {
           loader.classList.add("active");
           downloadBtn.style.opacity = "0.5";
@@ -919,7 +930,7 @@
             clearInterval(timer);
 
             if (!res.ok || data.error || !data.success) {
-              statusText.textContent = data.error || "다운로드 실패";
+              statusText.textContent = mapDownloadErrorMessage(data.error);
               statusText.style.color = "#e87a8a";
               bar.style.background = "#e87a8a";
               return;
@@ -937,19 +948,37 @@
               const link = document.createElement("a");
               link.className = "link-btn";
               link.href = downloadUrl;
-              link.target = "_blank";
-              link.textContent = "⬆ 파일 열기";
+              link.target = "_self";
+              link.textContent = "⬇ 파일 저장";
               item.querySelector(".download-footer").appendChild(link);
+              try {
+                const fileRes = await fetch(downloadUrl);
+                if (!fileRes.ok) {
+                  let reason = "";
+                  try {
+                    const errData = await fileRes.json();
+                    reason = errData && errData.error ? errData.error : "";
+                  } catch (_) {
+                    reason = "";
+                  }
+                  throw new Error(reason || "파일을 찾을 수 없습니다");
+                }
 
-              // Auto-trigger file open/download when the media is ready.
-              const autoLink = document.createElement("a");
-              autoLink.href = downloadUrl;
-              autoLink.target = "_self";
-              autoLink.rel = "noopener";
-              autoLink.style.display = "none";
-              document.body.appendChild(autoLink);
-              autoLink.click();
-              autoLink.remove();
+                const blob = await fileRes.blob();
+                const saveUrl = URL.createObjectURL(blob);
+                const saveLink = document.createElement("a");
+                saveLink.href = saveUrl;
+                saveLink.download = data.filename || "video";
+                saveLink.style.display = "none";
+                document.body.appendChild(saveLink);
+                saveLink.click();
+                saveLink.remove();
+                URL.revokeObjectURL(saveUrl);
+              } catch (err) {
+                statusText.textContent = mapDownloadErrorMessage(err.message);
+                statusText.style.color = "#e87a8a";
+                bar.style.background = "#e87a8a";
+              }
             }
           } catch (_) {
             clearInterval(timer);
