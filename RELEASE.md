@@ -19,8 +19,8 @@ git push origin v1.0.4
 ## 3) 자동 빌드/업로드 결과
 - 워크플로우: `.github/workflows/release.yml`
 - 릴리즈 에셋:
-  - `BaVa.Downloader-macos-universal2.zip` (Intel + Apple Silicon 공용)
-  - `BaVa.Downloader-macos-universal2.zip.sha256`
+  - `BaVa.Downloader-macos-x86_64.zip` (Intel 전용)
+  - `BaVa.Downloader-macos-x86_64.zip.sha256`
   - `BaVa.Downloader-macos-arm64.zip` (Apple Silicon 전용)
   - `BaVa.Downloader-macos-arm64.zip.sha256`
   - `BaVa.Downloader-windows.zip`
@@ -36,7 +36,7 @@ export RELEASE_REPOSITORY="OWNER/REPO"
 - 필요시 에셋명 변경:
 
 ```bash
-export RELEASE_ASSET_NAME="BaVa.Downloader-macos-universal2.zip"
+export RELEASE_ASSET_NAME="BaVa.Downloader-macos-x86_64.zip"
 ```
 
 - 설정 후 웹페이지 헤더에 `최신 앱 다운로드` 버튼이 표시되고, 최신 GitHub Release 에셋 URL로 연결됩니다.

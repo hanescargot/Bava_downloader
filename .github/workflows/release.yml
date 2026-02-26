@@ -31,7 +31,7 @@ jobs:
     runs-on: macos-latest
     strategy:
       matrix:
-        target_arch: [universal2, arm64]
+        target_arch: [x86_64, arm64]
 
     steps:
       - name: Checkout
@@ -63,8 +63,8 @@ jobs:
       - name: Package zip and checksum
         run: |
           cd dist
-          if [ "${{ matrix.target_arch }}" = "universal2" ]; then
-            ASSET_SUFFIX="macos-universal2"
+          if [ "${{ matrix.target_arch }}" = "x86_64" ]; then
+            ASSET_SUFFIX="macos-x86_64"
           else
             ASSET_SUFFIX="macos-arm64"
           fi
@@ -141,8 +141,8 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            release-files/release-macos-universal2/BaVa.Downloader-macos-universal2.zip
-            release-files/release-macos-universal2/BaVa.Downloader-macos-universal2.zip.sha256
+            release-files/release-macos-x86_64/BaVa.Downloader-macos-x86_64.zip
+            release-files/release-macos-x86_64/BaVa.Downloader-macos-x86_64.zip.sha256
             release-files/release-macos-arm64/BaVa.Downloader-macos-arm64.zip
             release-files/release-macos-arm64/BaVa.Downloader-macos-arm64.zip.sha256
             release-files/release-windows/BaVa.Downloader-windows.zip
