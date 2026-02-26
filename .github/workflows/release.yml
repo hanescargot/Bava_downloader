@@ -59,7 +59,8 @@ jobs:
       - name: Package zip and checksum
         run: |
           cd dist
-          zip -qr "BaVa Downloader-macos.zip" "BaVa Downloader.app"
+          # Preserve symlinks inside .app bundle; otherwise Archive Utility can fail (Error 79).
+          zip -qry "BaVa Downloader-macos.zip" "BaVa Downloader.app"
           shasum -a 256 "BaVa Downloader-macos.zip" > "BaVa Downloader-macos.zip.sha256"
 
       - name: Upload macOS artifacts
