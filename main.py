@@ -32,7 +32,7 @@ DEFAULT_DOWNLOAD_DIR = '/tmp/downloads'
 DEFAULT_APP_VERSION = '1.0.4'
 VERSION_FILE = os.path.join(BASE_DIR, 'VERSION')
 RELEASE_REPOSITORY = os.environ.get('RELEASE_REPOSITORY', os.environ.get('GITHUB_REPOSITORY', '')).strip()
-RELEASE_ASSET_NAME = os.environ.get('RELEASE_ASSET_NAME', 'BaVa Downloader-macos.zip').strip()
+RELEASE_ASSET_NAME = os.environ.get('RELEASE_ASSET_NAME', 'BaVa.Downloader-macos-universal2.zip').strip()
 RELEASE_CACHE_TTL_SECONDS = int(os.environ.get('RELEASE_CACHE_TTL_SECONDS', '600'))
 PRIMARY_SETTINGS_FILE = os.path.join(
     os.path.expanduser('~'),
