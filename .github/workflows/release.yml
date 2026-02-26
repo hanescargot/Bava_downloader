@@ -28,10 +28,15 @@ jobs:
 
   build-macos:
     needs: validate-version
-    runs-on: macos-latest
     strategy:
+      fail-fast: false
       matrix:
-        target_arch: [x86_64, arm64]
+        include:
+          - target_arch: x86_64
+            runner: macos-15-intel
+          - target_arch: arm64
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - name: Checkout
