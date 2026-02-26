@@ -680,6 +680,7 @@
 
         const urlInput = document.getElementById("video-url");
         const formatInput = document.getElementById("format");
+        const qualityInput = document.getElementById("quality");
         const fileNameInput = document.getElementById("file-name");
         const downloadBtn = document.getElementById("download-btn");
         const finalDownloadBtn = document.getElementById("download-link");
@@ -879,6 +880,7 @@
         finalDownloadBtn.addEventListener("click", async function () {
           const videoUrl = urlInput.value.trim();
           const format = formatInput.value;
+          const quality = qualityInput.value;
           const filename = fileNameInput.value.trim();
           if (!videoUrl) { setError("URL을 먼저 입력해주세요."); return; }
 
@@ -895,6 +897,7 @@
                 <div class="download-item-meta">
                   <span class="chip chip-platform">${platformLabels[currentPlatform]}</span>
                   <span class="chip chip-format">${format.toUpperCase()}</span>
+                  <span class="chip chip-format">${quality.toUpperCase()}</span>
                 </div>
               </div>
             </div>
@@ -924,7 +927,7 @@
             const res = await fetch(`${API_BASE_URL}/api/download`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ url: videoUrl, format, platform: currentPlatform, filename }),
+              body: JSON.stringify({ url: videoUrl, format, quality, platform: currentPlatform, filename }),
             });
             const data = await res.json();
             clearInterval(timer);

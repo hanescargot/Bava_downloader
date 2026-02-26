@@ -11,6 +11,7 @@ import sys
 import tempfile
 import subprocess
 import glob
+import shutil
 from urllib.parse import urlparse
 import logging
 import requests
@@ -129,6 +130,42 @@ def ensure_unique_filename(directory, base_name, ext_with_dot):
         candidate = f"{base_name} ({counter}){ext_with_dot}"
         counter += 1
     return candidate
+
+def build_format_selector(format_code, quality, platform):
+    requested_format = str(format_code or 'best').strip().lower()
+    requested_quality = str(quality or 'best').strip().lower()
+
+    if requested_format == 'mp3':
+        return 'bestaudio/best'
+
+    if platform != 'youtube':
+        return requested_format if requested_format else 'best'
+
+    # youtube 고화질은 video-only 트랙이 많은데, ffmpeg가 없으면 무음 파일이 생길 수 있다.
+    ffmpeg_available = bool(shutil.which('ffmpeg'))
+    if requested_format not in ('mp4', 'webm', 'best'):
+        requested_format = 'best'
+
+    ext_filter = ''
+    if requested_format in ('mp4', 'webm'):
+        ext_filter = f"[ext={requested_format}]"
+
+    height_filter = ''
+    if requested_quality in ('1080p', '720p', '480p'):
+        height = requested_quality.replace('p', '')
+        height_filter = f"[height<={height}]"
+
+    if ffmpeg_available:
+        return (
+            f"bestvideo{ext_filter}{height_filter}+bestaudio/"
+            f"best{ext_filter}{height_filter}[acodec!=none]/"
+            f"best{height_filter}[acodec!=none]/best"
+        )
+
+    return (
+        f"best{ext_filter}{height_filter}[acodec!=none]/"
+        f"best{height_filter}[acodec!=none]/best"
+    )
 
 def load_settings():
     settings = {'download_dir': DEFAULT_DOWNLOAD_DIR}
@@ -421,6 +458,7 @@ def download_video():
     
     video_url = data.get('url')
     format_code = data.get('format', 'best')  # 기본값 'best' 추가
+    quality = data.get('quality', 'best')
     platform = data.get('platform', 'youtube')
     custom_filename = data.get('filename', '')
     
@@ -439,8 +477,14 @@ def download_video():
     output_path = os.path.join(download_dir, f"{file_id}.%(ext)s")
     
     try:
+        selected_format = build_format_selector(format_code, quality, platform)
+        logger.info(
+            "Resolved format selector - requested format=%s quality=%s platform=%s selector=%s",
+            format_code, quality, platform, selected_format
+        )
+
         ydl_opts = {
-            'format': format_code,
+            'format': selected_format,
             'outtmpl': output_path,
             'restrictfilenames': True,
             'nocheckcertificate': True,  # 인증서 확인 건너뛰기
@@ -452,13 +496,6 @@ def download_video():
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             }
         }
-        
-        # 오디오만 다운로드하는 경우 - FFmpeg 의존성 제거됨
-        if format_code == 'mp3':
-            ydl_opts.update({
-                'format': 'bestaudio/best',
-                # FFmpeg 의존성 사용하지 않음
-            })
             
         # 플랫폼별 특화 옵션 추가
         if platform == 'instagram':
