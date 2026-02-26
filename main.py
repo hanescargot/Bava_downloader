@@ -11,7 +11,6 @@ import sys
 import tempfile
 import subprocess
 import glob
-import shutil
 from urllib.parse import urlparse
 import logging
 import requests
@@ -29,7 +28,7 @@ CORS(app)  # 크로스 오리진 요청 허용
 
 APP_NAME = 'BaVa Downloader'
 DEFAULT_DOWNLOAD_DIR = '/tmp/downloads'
-DEFAULT_APP_VERSION = '1.0.4'
+DEFAULT_APP_VERSION = '0.0.0'
 VERSION_FILE = os.path.join(BASE_DIR, 'VERSION')
 RELEASE_REPOSITORY = os.environ.get('RELEASE_REPOSITORY', os.environ.get('GITHUB_REPOSITORY', '')).strip()
 RELEASE_ASSET_NAME = os.environ.get('RELEASE_ASSET_NAME', 'BaVa.Downloader-macos-x86_64.zip').strip()
@@ -141,8 +140,6 @@ def build_format_selector(format_code, quality, platform):
     if platform != 'youtube':
         return requested_format if requested_format else 'best'
 
-    # youtube 고화질은 video-only 트랙이 많은데, ffmpeg가 없으면 무음 파일이 생길 수 있다.
-    ffmpeg_available = bool(shutil.which('ffmpeg'))
     if requested_format not in ('mp4', 'webm', 'best'):
         requested_format = 'best'
 
@@ -155,15 +152,10 @@ def build_format_selector(format_code, quality, platform):
         height = requested_quality.replace('p', '')
         height_filter = f"[height<={height}]"
 
-    if ffmpeg_available:
-        return (
-            f"bestvideo{ext_filter}{height_filter}+bestaudio/"
-            f"best{ext_filter}{height_filter}[acodec!=none]/"
-            f"best{height_filter}[acodec!=none]/best"
-        )
-
+    # Always prioritize muxed streams with audio to prevent silent video files.
     return (
         f"best{ext_filter}{height_filter}[acodec!=none]/"
+        f"best{ext_filter}[acodec!=none]/"
         f"best{height_filter}[acodec!=none]/best"
     )
 

@@ -63,6 +63,7 @@ jobs:
             --icon "static/icons/app.icns" \
             --add-data "templates:templates" \
             --add-data "static:static" \
+            --add-data "VERSION:." \
             app_launcher.py
 
       - name: Package zip and checksum
@@ -115,6 +116,7 @@ jobs:
             --name "BaVa Downloader" `
             --add-data "templates;templates" `
             --add-data "static;static" `
+            --add-data "VERSION;." `
             app_launcher.py
 
       - name: Package zip and checksum
