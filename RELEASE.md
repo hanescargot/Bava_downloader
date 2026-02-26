@@ -21,6 +21,8 @@ git push origin v1.0.4
 - 릴리즈 에셋:
   - `BaVa Downloader-macos.zip`
   - `BaVa Downloader-macos.zip.sha256`
+  - `BaVa Downloader-windows.zip`
+  - `BaVa Downloader-windows.zip.sha256`
 
 ## 4) 웹페이지에서 사용자 배포
 - 앱 서버 환경변수에 저장소를 설정합니다.

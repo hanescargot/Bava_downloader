@@ -1,4 +1,4 @@
-name: Release macOS App
+name: Release Desktop Apps
 
 on:
   push:
@@ -10,17 +10,11 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
-    runs-on: macos-latest
-
+  validate-version:
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
 
       - name: Validate version matches tag
         if: startsWith(github.ref, 'refs/tags/')
@@ -31,6 +25,19 @@ jobs:
             echo "Tag version ($TAG_VERSION) != VERSION file ($FILE_VERSION)"
             exit 1
           fi
+
+  build-macos:
+    needs: validate-version
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
@@ -55,10 +62,74 @@ jobs:
           zip -qr "BaVa Downloader-macos.zip" "BaVa Downloader.app"
           shasum -a 256 "BaVa Downloader-macos.zip" > "BaVa Downloader-macos.zip.sha256"
 
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          files: |
+            dist/BaVa Downloader-macos.zip
+            dist/BaVa Downloader-macos.zip.sha256
+
+  build-windows:
+    needs: validate-version
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build Windows app
+        shell: powershell
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --windowed `
+            --name "BaVa Downloader" `
+            --add-data "templates;templates" `
+            --add-data "static;static" `
+            app_launcher.py
+
+      - name: Package zip and checksum
+        shell: powershell
+        run: |
+          Compress-Archive -Path "dist/BaVa Downloader/*" -DestinationPath "dist/BaVa Downloader-windows.zip" -Force
+          $hash = (Get-FileHash -Path "dist/BaVa Downloader-windows.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash *BaVa Downloader-windows.zip" | Out-File -FilePath "dist/BaVa Downloader-windows.zip.sha256" -Encoding ASCII
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          files: |
+            dist/BaVa Downloader-windows.zip
+            dist/BaVa Downloader-windows.zip.sha256
+
+  publish-release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-files
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            dist/BaVa Downloader-macos.zip
-            dist/BaVa Downloader-macos.zip.sha256
+            release-files/release-macos/BaVa Downloader-macos.zip
+            release-files/release-macos/BaVa Downloader-macos.zip.sha256
+            release-files/release-windows/BaVa Downloader-windows.zip
+            release-files/release-windows/BaVa Downloader-windows.zip.sha256
