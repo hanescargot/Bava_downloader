@@ -47,6 +47,8 @@ SETTINGS_CANDIDATES = [PRIMARY_SETTINGS_FILE, FALLBACK_SETTINGS_FILE]
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 _release_cache = {'fetched_at': 0.0, 'data': None}
+DOWNLOAD_LINK_TTL_SECONDS = int(os.environ.get('DOWNLOAD_LINK_TTL_SECONDS', '86400'))
+_download_file_cache = {}
 
 def load_app_version():
     env_version = os.environ.get('APP_VERSION', '').strip()
@@ -288,6 +290,29 @@ def find_file_path(filename):
         if os.path.exists(file_path):
             return file_path
     return None
+
+def register_download_file(file_token, file_path, filename):
+    _download_file_cache[file_token] = {
+        'path': file_path,
+        'filename': filename,
+        'created_at': time.time(),
+    }
+
+def resolve_download_file(file_token):
+    payload = _download_file_cache.get(file_token)
+    if not payload:
+        return None
+
+    age = time.time() - payload.get('created_at', 0)
+    if age > DOWNLOAD_LINK_TTL_SECONDS:
+        _download_file_cache.pop(file_token, None)
+        return None
+
+    file_path = payload.get('path')
+    if not file_path or not os.path.exists(file_path):
+        _download_file_cache.pop(file_token, None)
+        return None
+    return payload
 
 os.makedirs(DEFAULT_DOWNLOAD_DIR, exist_ok=True)
 get_download_dir()
@@ -563,9 +588,11 @@ def download_video():
             os.replace(temp_download_path, final_download_path)
             logger.info(f"Final downloaded file: {final_download_path}")
             
+            register_download_file(file_id, final_download_path, final_filename)
+
             # 파일 다운로드 URL 생성 (절대 URL 사용)
             app_url = request.url_root.rstrip('/')  # 애플리케이션의 기본 URL 가져오기
-            download_url = f"{app_url}/api/files/{final_filename}"
+            download_url = f"{app_url}/api/files/{file_id}"
             logger.info(f"Generated download URL: {download_url}")
             
             return jsonify({
@@ -579,17 +606,25 @@ def download_video():
         logger.error(f"Error downloading video: {e}")
         return jsonify({'error': f'동영상 다운로드 중 오류가 발생했습니다: {str(e)}'}), 500
 
-@app.route('/api/files/<filename>', methods=['GET'])
-def serve_file(filename):
-    file_path = find_file_path(filename)
+@app.route('/api/files/<file_ref>', methods=['GET'])
+def serve_file(file_ref):
+    resolved = resolve_download_file(file_ref)
+    if resolved:
+        file_path = resolved['path']
+        download_name = resolved['filename']
+    else:
+        # Backward compatibility for legacy filename-based URLs
+        download_name = file_ref
+        file_path = find_file_path(download_name)
+
     logger.info(f"Serving file: {file_path}")
-    
+
     if not file_path or not os.path.exists(file_path):
         logger.error(f"File not found: {file_path}")
         return jsonify({'error': '파일을 찾을 수 없습니다'}), 404
-    
+
     # 파일명에서 확장자 추출
-    _, ext = os.path.splitext(filename)
+    _, ext = os.path.splitext(download_name)
     ext = ext[1:]  # 점 제거
     
     # Content-Type 설정
@@ -602,7 +637,7 @@ def serve_file(filename):
     # 확장자에 맞는 Content-Type이 없을 경우 기본값 사용
     content_type = content_types.get(ext, 'application/octet-stream')
     
-    download_name = os.path.basename(filename)
+    download_name = os.path.basename(download_name)
     logger.info(f"Sending file as: {download_name}, content-type: {content_type}")
     
     # 파일 제공 및 다운로드 설정
