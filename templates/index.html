@@ -951,7 +951,7 @@
               const link = document.createElement("a");
               link.className = "link-btn";
               link.href = downloadUrl;
-              link.target = "_self";
+              link.download = data.filename || "video";
               link.textContent = "⬇ 파일 저장";
               item.querySelector(".download-footer").appendChild(link);
               try {
@@ -986,6 +986,18 @@
                 ) {
                   throw new Error("파일 응답 형식이 올바르지 않습니다");
                 }
+
+                // Some servers return generic octet-stream even for HTML errors.
+                const sniff = (await blob.slice(0, 512).text()).toLowerCase();
+                if (
+                  sniff.includes("<!doctype html") ||
+                  sniff.includes("<html") ||
+                  sniff.includes("<head") ||
+                  sniff.includes("<body")
+                ) {
+                  throw new Error("서버가 파일 대신 HTML을 반환했습니다");
+                }
+
                 const saveUrl = URL.createObjectURL(blob);
                 const saveLink = document.createElement("a");
                 saveLink.href = saveUrl;
@@ -994,7 +1006,19 @@
                 document.body.appendChild(saveLink);
                 saveLink.click();
                 saveLink.remove();
-                URL.revokeObjectURL(saveUrl);
+                setTimeout(() => URL.revokeObjectURL(saveUrl), 30000);
+
+                // Keep manual button as a true download action as fallback.
+                link.addEventListener("click", function (e) {
+                  e.preventDefault();
+                  const manual = document.createElement("a");
+                  manual.href = saveUrl;
+                  manual.download = data.filename || "video";
+                  manual.style.display = "none";
+                  document.body.appendChild(manual);
+                  manual.click();
+                  manual.remove();
+                });
               } catch (err) {
                 statusText.textContent = mapDownloadErrorMessage(err.message);
                 statusText.style.color = "#e87a8a";

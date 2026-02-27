@@ -11,6 +11,7 @@ import sys
 import tempfile
 import subprocess
 import glob
+import shutil
 from urllib.parse import urlparse
 import logging
 import requests
@@ -49,6 +50,11 @@ logger = logging.getLogger(__name__)
 _release_cache = {'fetched_at': 0.0, 'data': None}
 DOWNLOAD_LINK_TTL_SECONDS = int(os.environ.get('DOWNLOAD_LINK_TTL_SECONDS', '86400'))
 _download_file_cache = {}
+DOWNLOAD_DEBUG_LOGS = os.environ.get('DOWNLOAD_DEBUG_LOGS', '').lower() in ('1', 'true', 'yes', 'on')
+
+def debug_log(message, *args):
+    if DOWNLOAD_DEBUG_LOGS:
+        logger.info(f"[download-debug] {message}", *args)
 
 def get_version_file_candidates():
     candidates = []
@@ -184,26 +190,52 @@ def build_format_selector(format_code, quality, platform):
     if requested_format not in ('mp4', 'webm', 'best'):
         requested_format = 'best'
 
-    ext_filter = ''
-    if requested_format in ('mp4', 'webm'):
-        ext_filter = f"[ext={requested_format}]"
+    ffmpeg_available = bool(shutil.which('ffmpeg'))
+    # Keep selector broad for maximum compatibility with YouTube Shorts/share links.
+    if requested_format == 'mp4':
+        if ffmpeg_available:
+            return "bestvideo*+bestaudio/best[ext=mp4]/best"
+        return "best[ext=mp4]/best"
+    if requested_format == 'webm':
+        if ffmpeg_available:
+            return "bestvideo*[ext=webm]+bestaudio/best[ext=webm]/best"
+        return "best[ext=webm]/best"
+    if ffmpeg_available:
+        return "bestvideo*+bestaudio/best"
+    return "best"
 
-    height_filter = ''
-    if requested_quality in ('1080p', '720p', '480p'):
-        height = requested_quality.replace('p', '')
-        height_filter = f"[height<={height}]"
-
-    # Prefer muxed A/V streams first, then relax to best available (or mergeable) formats.
-    return (
-        f"best{ext_filter}{height_filter}[vcodec!=none][acodec!=none]/"
-        f"best{ext_filter}[vcodec!=none][acodec!=none]/"
-        f"best{height_filter}[vcodec!=none][acodec!=none]/"
-        f"best[vcodec!=none][acodec!=none]/"
-        f"bestvideo{ext_filter}{height_filter}+bestaudio/"
-        f"bestvideo{ext_filter}+bestaudio/"
-        f"bestvideo+bestaudio/"
-        f"best{ext_filter}{height_filter}/best{ext_filter}/best"
-    )
+def build_youtube_download_attempts(format_code, quality, primary_selector):
+    attempts = [{
+        'label': 'primary-web',
+        'format': primary_selector,
+        'extractor_args': {'youtube': {'player_client': ['web']}},
+    }]
+    attempts.append({
+        'label': 'android-fallback',
+        'format': "bestvideo*+bestaudio/best",
+        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+    })
+    attempts.append({
+        'label': 'ios-fallback',
+        'format': "bestvideo*+bestaudio/best",
+        'extractor_args': {'youtube': {'player_client': ['ios', 'web']}},
+    })
+    attempts.append({
+        'label': 'tv-embedded-fallback',
+        'format': "bestvideo*+bestaudio/best",
+        'extractor_args': {'youtube': {'player_client': ['tv_embedded', 'android', 'web']}},
+    })
+    attempts.append({
+        'label': 'mweb-fallback',
+        'format': "bestvideo*+bestaudio/best",
+        'extractor_args': {'youtube': {'player_client': ['mweb', 'android', 'web']}},
+    })
+    attempts.append({
+        'label': 'plain-best-final',
+        'format': "best",
+        'extractor_args': {'youtube': {'player_client': ['web']}},
+    })
+    return attempts
 
 def load_settings():
     settings = {'download_dir': DEFAULT_DOWNLOAD_DIR}
@@ -340,21 +372,26 @@ def register_download_file(file_token, file_path, filename):
         'filename': filename,
         'created_at': time.time(),
     }
+    debug_log("registered token=%s file=%s", file_token, file_path)
 
 def resolve_download_file(file_token):
     payload = _download_file_cache.get(file_token)
     if not payload:
+        debug_log("token miss token=%s", file_token)
         return None
 
     age = time.time() - payload.get('created_at', 0)
     if age > DOWNLOAD_LINK_TTL_SECONDS:
         _download_file_cache.pop(file_token, None)
+        debug_log("token expired token=%s age=%.2fs", file_token, age)
         return None
 
     file_path = payload.get('path')
     if not file_path or not os.path.exists(file_path):
         _download_file_cache.pop(file_token, None)
+        debug_log("token stale token=%s path=%s", file_token, file_path)
         return None
+    debug_log("token hit token=%s path=%s", file_token, file_path)
     return payload
 
 os.makedirs(DEFAULT_DOWNLOAD_DIR, exist_ok=True)
@@ -381,7 +418,7 @@ def cleanup_old_files():
 def is_valid_url(url, platform):
     parsed_url = urlparse(url)
     if platform == 'youtube':
-        return bool(parsed_url.netloc in ['www.youtube.com', 'youtube.com', 'youtu.be'])
+        return bool(parsed_url.netloc in ['www.youtube.com', 'youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be'])
     elif platform == 'tiktok':
         return bool(parsed_url.netloc in ['www.tiktok.com', 'tiktok.com', 'vm.tiktok.com'])
     elif platform == 'instagram':
@@ -436,6 +473,28 @@ def clean_facebook_url(url):
     # 기타 페이스북 게시물의 경우 원본 URL 사용
     return url
 
+def normalize_youtube_url(url):
+    parsed = urlparse(url)
+    host = (parsed.netloc or '').lower()
+    path_parts = [p for p in parsed.path.split('/') if p]
+    query = parsed.query or ''
+    video_id = None
+
+    if host in ('youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com'):
+        if len(path_parts) >= 2 and path_parts[0] == 'shorts':
+            video_id = path_parts[1]
+        elif query:
+            for token in query.split('&'):
+                if token.startswith('v=') and len(token) > 2:
+                    video_id = token.split('=', 1)[1]
+                    break
+    elif host == 'youtu.be' and path_parts:
+        video_id = path_parts[0]
+
+    if video_id:
+        return f"https://www.youtube.com/watch?v={video_id}"
+    return url
+
 @app.route('/api/video-info', methods=['POST'])
 def get_video_info():
     data = request.json
@@ -468,6 +527,8 @@ def get_video_info():
             ydl_opts.update({
                 'extract_flat': True,  # 플레이리스트 정보만 추출
             })
+        elif platform == 'youtube':
+            video_url = normalize_youtube_url(video_url)
         elif platform == 'facebook':
             video_url = clean_facebook_url(video_url)
             ydl_opts.update({
@@ -536,6 +597,10 @@ def download_video():
     # 임시 파일 ID 생성 (다운로드 완료 후 사용자 파일명으로 변경)
     file_id = str(uuid.uuid4())
     output_path = os.path.join(download_dir, f"{file_id}.%(ext)s")
+    debug_log(
+        "start file_id=%s platform=%s format=%s quality=%s dir=%s",
+        file_id, platform, format_code, quality, download_dir
+    )
     
     try:
         selected_format = build_format_selector(format_code, quality, platform)
@@ -543,13 +608,14 @@ def download_video():
             "Resolved format selector - requested format=%s quality=%s platform=%s selector=%s",
             format_code, quality, platform, selected_format
         )
+        debug_log("selector file_id=%s selector=%s", file_id, selected_format)
 
         ydl_opts = {
             'format': selected_format,
             'outtmpl': output_path,
             'restrictfilenames': True,
             'nocheckcertificate': True,  # 인증서 확인 건너뛰기
-            'ignoreerrors': True,  # 일부 오류 무시
+            'ignoreerrors': False,  # 오류를 명확히 surface 해서 잘못된 파일 저장 방지
             'no_warnings': True,
             'quiet': True,
             # 사용자 에이전트 추가
@@ -564,6 +630,8 @@ def download_video():
             ydl_opts.update({
                 'extract_flat': False,  # 실제 다운로드를 위해 상세 정보 추출
             })
+        elif platform == 'youtube':
+            video_url = normalize_youtube_url(video_url)
         elif platform == 'facebook':
             video_url = clean_facebook_url(video_url)
             ydl_opts.update({
@@ -572,87 +640,186 @@ def download_video():
             })
         
         logger.info(f"Starting download for: {video_url}")
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info("YoutubeDL initialized")
-            info = ydl.extract_info(video_url, download=True)
-            if not info:
-                return jsonify({'error': '다운로드 가능한 미디어를 찾지 못했습니다. 영상 권한 또는 포맷을 확인해주세요.'}), 400
-            if isinstance(info, dict) and info.get('entries'):
-                entries = [entry for entry in info.get('entries', []) if entry]
-                if not entries:
-                    return jsonify({'error': '다운로드 가능한 미디어를 찾지 못했습니다. 영상 권한 또는 포맷을 확인해주세요.'}), 400
-                info = entries[0]
+        if platform == 'youtube':
+            attempts_to_try = build_youtube_download_attempts(format_code, quality, selected_format)
+        else:
+            attempts_to_try = [{
+                'label': 'primary',
+                'format': selected_format,
+                'extractor_args': None,
+            }]
 
-            logger.info(f"Download completed, info: {info.get('title')}")
-            
-            # Windows 환경에서 yt-dlp 후처리(병합/이름변경)가 늦게 끝나는 경우가 있어 재시도한다.
-            filename = None
-            prepared_path = ydl.prepare_filename(info) if isinstance(info, dict) else None
-            max_wait_attempts = int(os.environ.get('DOWNLOAD_FILE_WAIT_ATTEMPTS', '60'))
-            wait_interval_seconds = float(os.environ.get('DOWNLOAD_FILE_WAIT_INTERVAL_SECONDS', '0.5'))
-            for _ in range(max_wait_attempts):
-                try:
-                    files_in_dir = os.listdir(download_dir)
-                except Exception:
-                    files_in_dir = []
+        media_exts = {'mp4', 'webm', 'mp3', 'm4a', 'mkv', 'mov'}
+        blocked_exts = {'mhtml', 'html', 'htm', 'json', 'txt'}
+        info = None
+        last_download_error = None
+        for idx, attempt in enumerate(attempts_to_try, start=1):
+            selector = attempt['format']
+            current_opts = dict(ydl_opts)
+            current_opts['format'] = selector
+            if attempt.get('extractor_args'):
+                current_opts['extractor_args'] = attempt['extractor_args']
+            debug_log(
+                "try selector file_id=%s idx=%s label=%s selector=%s extractor_args=%s",
+                file_id, idx, attempt.get('label'), selector, attempt.get('extractor_args')
+            )
+            try:
+                with yt_dlp.YoutubeDL(current_opts) as ydl:
+                    logger.info("YoutubeDL initialized (attempt %s)", idx)
+                    info = ydl.extract_info(video_url, download=True)
+                    if not info:
+                        raise yt_dlp.utils.DownloadError('다운로드 가능한 미디어를 찾지 못했습니다')
+                    if isinstance(info, dict) and info.get('entries'):
+                        entries = [entry for entry in info.get('entries', []) if entry]
+                        if not entries:
+                            raise yt_dlp.utils.DownloadError('다운로드 가능한 미디어를 찾지 못했습니다')
+                        info = entries[0]
 
-                if prepared_path:
-                    prepared_name = os.path.basename(prepared_path)
-                    if os.path.exists(prepared_path):
-                        filename = prepared_name
-                    else:
-                        prepared_no_ext, _ = os.path.splitext(prepared_name)
-                        if prepared_no_ext:
-                            matched = sorted(glob.glob(os.path.join(download_dir, f"{prepared_no_ext}.*")))
-                            matched = [m for m in matched if not m.endswith(('.part', '.tmp', '.ytdl'))]
-                            if matched:
-                                filename = os.path.basename(matched[0])
+                    if platform == 'youtube':
+                        extractor_key = str((info or {}).get('extractor_key') or '').lower()
+                        if extractor_key and 'youtube' not in extractor_key:
+                            debug_log(
+                                "selector non-youtube extractor file_id=%s idx=%s extractor=%s",
+                                file_id, idx, extractor_key
+                            )
+                            raise yt_dlp.utils.DownloadError(
+                                f'non-youtube extractor resolved: {extractor_key}'
+                            )
 
-                if not filename:
-                    for file in files_in_dir:
-                        if file.startswith(file_id) and not file.endswith(('.part', '.tmp', '.ytdl')):
-                            filename = file
-                            break
-
-                if filename:
+                    # If extractor resolved to non-media extension, retry next strategy.
+                    resolved_ext = str((info or {}).get('ext') or '').lower().strip()
+                    if resolved_ext and (resolved_ext in blocked_exts or resolved_ext not in media_exts):
+                        debug_log(
+                            "selector non-media result file_id=%s idx=%s ext=%s",
+                            file_id, idx, resolved_ext
+                        )
+                        try:
+                            for f in os.listdir(download_dir):
+                                if f.startswith(file_id):
+                                    p = os.path.join(download_dir, f)
+                                    if os.path.isfile(p):
+                                        os.remove(p)
+                        except Exception:
+                            pass
+                        raise yt_dlp.utils.DownloadError(
+                            f'non-media format resolved: {resolved_ext}'
+                        )
                     break
-                time.sleep(wait_interval_seconds)
+            except yt_dlp.utils.DownloadError as e:
+                last_download_error = e
+                debug_log("selector failed file_id=%s idx=%s err=%s", file_id, idx, str(e))
+                if idx == len(attempts_to_try):
+                    raise
+                continue
 
-            logger.info(f"Files in directory: {os.listdir(download_dir)}")
+        if not info:
+            if last_download_error:
+                raise last_download_error
+            return jsonify({'error': '다운로드 가능한 미디어를 찾지 못했습니다. 영상 권한 또는 포맷을 확인해주세요.'}), 400
+
+        logger.info(f"Download completed, info: {info.get('title')}")
+        debug_log("ydl completed file_id=%s title=%s", file_id, info.get('title'))
             
+        # Windows 환경에서 yt-dlp 후처리(병합/이름변경)가 늦게 끝나는 경우가 있어 재시도한다.
+        filename = None
+        prepared_path = None
+        max_wait_attempts = int(os.environ.get('DOWNLOAD_FILE_WAIT_ATTEMPTS', '60'))
+        wait_interval_seconds = float(os.environ.get('DOWNLOAD_FILE_WAIT_INTERVAL_SECONDS', '0.5'))
+        for _ in range(max_wait_attempts):
+            try:
+                files_in_dir = os.listdir(download_dir)
+            except Exception:
+                files_in_dir = []
+
+            if prepared_path:
+                prepared_name = os.path.basename(prepared_path)
+                if os.path.exists(prepared_path):
+                    filename = prepared_name
+                else:
+                    prepared_no_ext, _ = os.path.splitext(prepared_name)
+                    if prepared_no_ext:
+                        matched = sorted(glob.glob(os.path.join(download_dir, f"{prepared_no_ext}.*")))
+                        matched = [m for m in matched if not m.endswith(('.part', '.tmp', '.ytdl'))]
+                        if matched:
+                            filename = os.path.basename(matched[0])
+
             if not filename:
-                return jsonify({'error': '파일 다운로드 후 찾을 수 없습니다'}), 500
-            
-            temp_download_path = os.path.join(download_dir, filename)
-            logger.info(f"Found downloaded file: {temp_download_path}")
+                for file in files_in_dir:
+                    if file.startswith(file_id) and not file.endswith(('.part', '.tmp', '.ytdl')):
+                        filename = file
+                        break
 
-            _, ext_with_dot = os.path.splitext(filename)
-            base_name = sanitize_filename(custom_filename or info.get('title'))
-            final_filename = ensure_unique_filename(download_dir, base_name, ext_with_dot)
-            final_download_path = os.path.join(download_dir, final_filename)
-            os.replace(temp_download_path, final_download_path)
-            logger.info(f"Final downloaded file: {final_download_path}")
+            if filename:
+                break
+            time.sleep(wait_interval_seconds)
+
+        logger.info(f"Files in directory: {os.listdir(download_dir)}")
+        debug_log(
+            "post-download file_id=%s attempts=%s filename=%s",
+            file_id, max_wait_attempts, filename
+        )
             
-            register_download_file(file_id, final_download_path, final_filename)
+        if not filename:
+            debug_log("filename unresolved file_id=%s dir=%s", file_id, download_dir)
+            return jsonify({'error': '파일 다운로드 후 찾을 수 없습니다'}), 500
+            
+        temp_download_path = os.path.join(download_dir, filename)
+        logger.info(f"Found downloaded file: {temp_download_path}")
+
+        _, ext_with_dot = os.path.splitext(filename)
+        ext = ext_with_dot.lower().lstrip('.')
+        if ext in blocked_exts or ext not in media_exts:
+            debug_log(
+                "blocked non-media output file_id=%s filename=%s ext=%s",
+                file_id, filename, ext
+            )
+            try:
+                os.remove(temp_download_path)
+            except Exception:
+                pass
+            return jsonify({'error': '미디어 파일이 아닌 형식으로 감지되어 다운로드를 중단했습니다'}), 400
+
+        base_name = sanitize_filename(custom_filename or info.get('title'))
+        final_filename = ensure_unique_filename(download_dir, base_name, ext_with_dot)
+        final_download_path = os.path.join(download_dir, final_filename)
+        os.replace(temp_download_path, final_download_path)
+        logger.info(f"Final downloaded file: {final_download_path}")
+        debug_log("moved file_id=%s from=%s to=%s", file_id, temp_download_path, final_download_path)
+            
+        register_download_file(file_id, final_download_path, final_filename)
 
             # 파일 다운로드 URL 생성 (절대 URL 사용)
-            app_url = request.url_root.rstrip('/')  # 애플리케이션의 기본 URL 가져오기
-            download_url = f"{app_url}/api/files/{file_id}"
-            logger.info(f"Generated download URL: {download_url}")
+        app_url = request.url_root.rstrip('/')  # 애플리케이션의 기본 URL 가져오기
+        download_url = f"{app_url}/api/files/{file_id}"
+        logger.info(f"Generated download URL: {download_url}")
+        debug_log("download url file_id=%s url=%s", file_id, download_url)
             
+        return jsonify({
+            'success': True, 
+            'download_url': download_url,
+            'filename': final_filename,
+            'title': info.get('title')
+        })
+            
+    except yt_dlp.utils.DownloadError as e:
+        logger.warning(f"yt-dlp download error: {e}")
+        debug_log("yt-dlp error file_id=%s err=%s", file_id, str(e))
+        err_text = str(e)
+        if 'non-media format resolved: mhtml' in err_text:
             return jsonify({
-                'success': True, 
-                'download_url': download_url,
-                'filename': final_filename,
-                'title': info.get('title')
-            })
-            
+                'error': 'YouTube가 미디어 대신 차단 응답(mhtml)을 반환했습니다. 앱을 최신 버전으로 업데이트하고 다시 시도해주세요.'
+            }), 400
+        if 'HTTP Error 403' in err_text:
+            return jsonify({'error': 'YouTube 접근이 차단되어 다운로드에 실패했습니다 (HTTP 403). 잠시 후 다시 시도해주세요.'}), 400
+        return jsonify({'error': f'다운로드 가능한 포맷을 찾지 못했습니다: {err_text}'}), 400
     except Exception as e:
-        logger.error(f"Error downloading video: {e}")
+        logger.exception("Error downloading video")
+        debug_log("unexpected error file_id=%s err=%s", file_id, str(e))
         return jsonify({'error': f'동영상 다운로드 중 오류가 발생했습니다: {str(e)}'}), 500
 
 @app.route('/api/files/<file_ref>', methods=['GET'])
 def serve_file(file_ref):
+    debug_log("serve request ref=%s", file_ref)
     resolved = resolve_download_file(file_ref)
     if resolved:
         file_path = resolved['path']
@@ -666,6 +833,7 @@ def serve_file(file_ref):
 
     if not file_path or not os.path.exists(file_path):
         logger.error(f"File not found: {file_path}")
+        debug_log("serve miss ref=%s", file_ref)
         return jsonify({'error': '파일을 찾을 수 없습니다'}), 404
 
     # 파일명에서 확장자 추출
@@ -684,6 +852,7 @@ def serve_file(file_ref):
     
     download_name = os.path.basename(download_name)
     logger.info(f"Sending file as: {download_name}, content-type: {content_type}")
+    debug_log("serve hit ref=%s name=%s mime=%s", file_ref, download_name, content_type)
     
     # 파일 제공 및 다운로드 설정
     return send_file(
