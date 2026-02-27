@@ -50,18 +50,57 @@ _release_cache = {'fetched_at': 0.0, 'data': None}
 DOWNLOAD_LINK_TTL_SECONDS = int(os.environ.get('DOWNLOAD_LINK_TTL_SECONDS', '86400'))
 _download_file_cache = {}
 
+def get_version_file_candidates():
+    candidates = []
+
+    env_version_file = os.environ.get('APP_VERSION_FILE', '').strip()
+    if env_version_file:
+        candidates.append(env_version_file)
+
+    candidates.append(VERSION_FILE)
+
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+        meipass_dir = getattr(sys, '_MEIPASS', '')
+        candidates.extend([
+            os.path.join(exe_dir, 'VERSION'),
+            os.path.abspath(os.path.join(exe_dir, '..', 'Resources', 'VERSION')),
+            os.path.abspath(os.path.join(exe_dir, '..', 'Frameworks', 'VERSION')),
+            os.path.join(meipass_dir, 'VERSION') if meipass_dir else '',
+        ])
+
+    # Deduplicate while preserving order
+    normalized = []
+    seen = set()
+    for path in candidates:
+        if not path:
+            continue
+        abs_path = os.path.abspath(os.path.expanduser(path))
+        if abs_path in seen:
+            continue
+        seen.add(abs_path)
+        normalized.append(abs_path)
+    return normalized
+
 def load_app_version():
     env_version = os.environ.get('APP_VERSION', '').strip()
     if env_version:
         return env_version
+
+    version_files = get_version_file_candidates()
     try:
-        if os.path.exists(VERSION_FILE):
-            with open(VERSION_FILE, 'r', encoding='utf-8') as f:
+        for version_file in version_files:
+            if not os.path.exists(version_file):
+                continue
+            with open(version_file, 'r', encoding='utf-8') as f:
                 version = f.read().strip()
                 if version:
+                    logger.info(f"Loaded app version from {version_file}: {version}")
                     return version
     except Exception as e:
-        logger.warning(f"Failed to load version from {VERSION_FILE}: {e}")
+        logger.warning(f"Failed to load version from candidates {version_files}: {e}")
+
+    logger.warning(f"VERSION file not found in candidates: {version_files}")
     return DEFAULT_APP_VERSION
 
 APP_VERSION = load_app_version()
@@ -154,12 +193,16 @@ def build_format_selector(format_code, quality, platform):
         height = requested_quality.replace('p', '')
         height_filter = f"[height<={height}]"
 
-    # Always prioritize muxed A/V streams to prevent silent video outputs on macOS.
+    # Prefer muxed A/V streams first, then relax to best available (or mergeable) formats.
     return (
         f"best{ext_filter}{height_filter}[vcodec!=none][acodec!=none]/"
         f"best{ext_filter}[vcodec!=none][acodec!=none]/"
         f"best{height_filter}[vcodec!=none][acodec!=none]/"
-        f"best[vcodec!=none][acodec!=none]/best"
+        f"best[vcodec!=none][acodec!=none]/"
+        f"bestvideo{ext_filter}{height_filter}+bestaudio/"
+        f"bestvideo{ext_filter}+bestaudio/"
+        f"bestvideo+bestaudio/"
+        f"best{ext_filter}{height_filter}/best{ext_filter}/best"
     )
 
 def load_settings():
@@ -545,7 +588,9 @@ def download_video():
             # Windows 환경에서 yt-dlp 후처리(병합/이름변경)가 늦게 끝나는 경우가 있어 재시도한다.
             filename = None
             prepared_path = ydl.prepare_filename(info) if isinstance(info, dict) else None
-            for _ in range(20):
+            max_wait_attempts = int(os.environ.get('DOWNLOAD_FILE_WAIT_ATTEMPTS', '60'))
+            wait_interval_seconds = float(os.environ.get('DOWNLOAD_FILE_WAIT_INTERVAL_SECONDS', '0.5'))
+            for _ in range(max_wait_attempts):
                 try:
                     files_in_dir = os.listdir(download_dir)
                 except Exception:
@@ -571,7 +616,7 @@ def download_video():
 
                 if filename:
                     break
-                time.sleep(0.5)
+                time.sleep(wait_interval_seconds)
 
             logger.info(f"Files in directory: {os.listdir(download_dir)}")
             
